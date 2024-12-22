@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Secure Image Storage</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #f0f0f0;
+        }
+        .container {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .image-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+            gap: 20px;
+            margin-top: 20px;
+        }
+        .image-item {
+            border: 1px solid #ddd;
+            padding: 10px;
+            border-radius: 4px;
+        }
+        .image-item img {
+            max-width: 100%;
+            height: auto;
+        }
+        button {
+            background: #007bff;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            margin: 5px;
+        }
+        button:hover {
+            background: #0056b3;
+        }
+        #keyDisplay {
+            word-break: break-all;
+            background: #eee;
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 4px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Secure Image Storage</h1>
+        
+        <div>
+            <input type="file" id="imageInput" accept="image/*" multiple>
+            <button onclick="handleImageUpload()">Upload Images</button>
+            <button onclick="exportStorage()">Export Storage</button>
+            <input type="file" id="importInput" accept=".json">
+            <button onclick="importStorage()">Import Storage</button>
+        </div>
+
+        <div id="keyDisplay"></div>
+        
+        <div>
+            <input type="text" id="keyInput" placeholder="Enter key to decrypt">
+            <button onclick="loadImages()">Load Images</button>
+        </div>
+
+        <div id="imageGrid" class="image-grid"></div>
+    </div>
+
+    <script>
+        let currentKey = null;
+
+        async function generateKey() {
+            const key = await window.crypto.subtle.generateKey(
+                {
+                    name: "AES-GCM",
+                    length: 256
+                },
+                true,
+                ["encrypt", "decrypt"]
+            );
+            const exportedKey = await window.crypto.subtle.exportKey("raw", key);
+            const keyBase64 = btoa(String.fromCharCode(...new Uint8Array(exportedKey)));
+            document.getElementById('keyDisplay').textContent = `Your encryption key: ${keyBase64}`;
+            return { key, keyBase64 };
+        }
+
+        async function importKey(keyBase64) {
+            const keyBuffer = Uint8Array.from(atob(keyBase64), c => c.charCodeAt(0));
+            return await window.crypto.subtle.importKey(
+                "raw",
+                keyBuffer,
+                "AES-GCM",
+                true,
+                ["encrypt", "decrypt"]
+            );
+        }
+
+        async function encryptData(data, key) {
+            const iv = window.crypto.getRandomValues(new Uint8Array(12));
+            const encrypted = await window.crypto.subtle.encrypt(
+                {
+                    name: "AES-GCM",
+                    iv: iv
+                },
+                key,
+                data
+            );
+            return {
+                encrypted: Array.from(new Uint8Array(encrypted)),
+                iv: Array.from(iv)
+            };
+        }
+
+        async function decryptData(encryptedData, iv, key) {
+            const decrypted = await window.crypto.subtle.decrypt(
+                {
+                    name: "AES-GCM",
+                    iv: new Uint8Array(iv)
+                },
+                key,
+                new Uint8Array(encryptedData)
+            );
+            return decrypted;
+        }
+
+        async function handleImageUpload() {
+            const files = document.getElementById('imageInput').files;
+            if (files.length === 0) return;
+
+            const { key, keyBase64 } = await generateKey();
+            currentKey = key;
+
+            for (let file of files) {
+                const reader = new FileReader();
+                reader.onload = async (e) => {
+                    const imageData = e.target.result;
+                    const encrypted = await encryptData(imageData, key);
+                    
+                    const images = JSON.parse(localStorage.getItem('encryptedImages') || '[]');
+                    images.push(encrypted);
+                    localStorage.setItem('encryptedImages', JSON.stringify(images));
+                };
+                reader.readAsArrayBuffer(file);
+            }
+        }
+
+        async function loadImages() {
+            const keyBase64 = document.getElementById('keyInput').value;
+            if (!keyBase64) return;
+
+            try {
+                const key = await importKey(keyBase64);
+                const images = JSON.parse(localStorage.getItem('encryptedImages') || '[]');
+                const imageGrid = document.getElementById('imageGrid');
+                imageGrid.innerHTML = '';
+
+                for (let image of images) {
+                    try {
+                        const decrypted = await decryptData(image.encrypted, image.iv, key);
+                        const blob = new Blob([decrypted], { type: 'image/jpeg' });
+                        const url = URL.createObjectURL(blob);
+                        
+                        const div = document.createElement('div');
+                        div.className = 'image-item';
+                        const img = document.createElement('img');
+                        img.src = url;
+                        div.appendChild(img);
+                        imageGrid.appendChild(div);
+                    } catch (error) {
+                        console.error('Failed to decrypt image:', error);
+                    }
+                }
+            } catch (error) {
+                console.error('Invalid key:', error);
+                alert('Invalid encryption key');
+            }
+        }
+
+        function exportStorage() {
+            const data = localStorage.getItem('encryptedImages');
+            const blob = new Blob([data], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'encrypted-images.json';
+            a.click();
+        }
+
+        async function importStorage() {
+            const file = document.getElementById('importInput').files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                localStorage.setItem('encryptedImages', e.target.result);
+                alert('Storage imported successfully');
+            };
+            reader.readAsText(file);
+        }
+    </script>
+</body>
+</html>
